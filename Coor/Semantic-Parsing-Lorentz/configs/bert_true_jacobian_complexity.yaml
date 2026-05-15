@@ -24,6 +24,8 @@ max_tangent_norm: 5.0
 metric_delta_scale: 0.05
 metric_reg_weight: 0.0001
 curvature_aux_weight: 0.01
+curvature_min_warning_fraction: 0.8
+curvature_target_mode: complexity_linear
 
 use_true_jacobian_metric: true
 true_jacobian_target: lorentz
@@ -46,7 +48,7 @@ batch_size: 8
 num_workers: 0
 
 epochs: 5
-learning_rate: 2e-5
+learning_rate: 0.00002
 weight_decay: 0.01
 grad_clip_norm: 1.0
 log_interval: 10

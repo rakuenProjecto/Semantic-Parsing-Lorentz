@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import math
 import os
 import random
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -28,17 +30,50 @@ from src.model import SemanticLorentzParser
 TensorLike = Any
 
 
+def as_bool(value: Any) -> bool:
+    """Parse booleans from config or CLI values."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "n", "off"}:
+            return False
+    raise ValueError(f"cannot parse boolean value: {value!r}")
+
+
+def as_int(value: Any) -> int:
+    """Parse integer config values, accepting numeric strings."""
+    if value is None:
+        raise ValueError("cannot parse None as int")
+    if isinstance(value, bool):
+        raise ValueError(f"cannot parse boolean as int: {value!r}")
+    return int(value)
+
+
+def as_float(value: Any) -> float:
+    """Parse float config values, accepting scientific notation strings."""
+    if value is None:
+        raise ValueError("cannot parse None as float")
+    if isinstance(value, bool):
+        raise ValueError(f"cannot parse boolean as float: {value!r}")
+    return float(value)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a Lorentz semantic parser")
     parser.add_argument("--config", default="configs/default.yaml", help="Path to YAML config")
 
     parser.add_argument("--seed", type=int)
-    parser.add_argument("--use_dummy_encoder", dest="use_dummy_encoder", action="store_true", default=None)
+    parser.add_argument("--use_dummy_encoder", dest="use_dummy_encoder", nargs="?", const=True, type=as_bool, default=None)
     parser.add_argument("--no_dummy_encoder", dest="use_dummy_encoder", action="store_false")
     parser.add_argument("--encoder_name", type=str)
-    parser.add_argument("--hf_local_files_only", dest="hf_local_files_only", action="store_true", default=None)
+    parser.add_argument("--hf_local_files_only", dest="hf_local_files_only", nargs="?", const=True, type=as_bool, default=None)
     parser.add_argument("--no_hf_local_files_only", dest="hf_local_files_only", action="store_false")
-    parser.add_argument("--freeze_encoder", dest="freeze_encoder", action="store_true", default=None)
+    parser.add_argument("--freeze_encoder", dest="freeze_encoder", nargs="?", const=True, type=as_bool, default=None)
     parser.add_argument("--no_freeze_encoder", dest="freeze_encoder", action="store_false")
 
     parser.add_argument("--num_labels", type=int)
@@ -61,27 +96,78 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train_jsonl", type=str)
     parser.add_argument("--val_jsonl", type=str)
     parser.add_argument("--complexity_mode", choices=["synthetic", "heuristic", "spacy"])
-    parser.add_argument("--return_complexity_features", dest="return_complexity_features", action="store_true", default=None)
+    parser.add_argument(
+        "--return_complexity_features",
+        dest="return_complexity_features",
+        nargs="?",
+        const=True,
+        type=as_bool,
+        default=None,
+    )
     parser.add_argument("--no_return_complexity_features", dest="return_complexity_features", action="store_false")
 
-    parser.add_argument("--use_true_jacobian_metric", dest="use_true_jacobian_metric", action="store_true", default=None)
+    parser.add_argument(
+        "--use_true_jacobian_metric",
+        dest="use_true_jacobian_metric",
+        nargs="?",
+        const=True,
+        type=as_bool,
+        default=None,
+    )
     parser.add_argument("--no_true_jacobian_metric", dest="use_true_jacobian_metric", action="store_false")
     parser.add_argument("--true_jacobian_target", choices=["lorentz", "tangent"])
-    parser.add_argument("--true_jacobian_create_graph", dest="true_jacobian_create_graph", action="store_true", default=None)
+    parser.add_argument(
+        "--true_jacobian_create_graph",
+        dest="true_jacobian_create_graph",
+        nargs="?",
+        const=True,
+        type=as_bool,
+        default=None,
+    )
     parser.add_argument("--no_true_jacobian_create_graph", dest="true_jacobian_create_graph", action="store_false")
-    parser.add_argument("--true_jacobian_normalize", dest="true_jacobian_normalize", action="store_true", default=None)
+    parser.add_argument(
+        "--true_jacobian_normalize",
+        dest="true_jacobian_normalize",
+        nargs="?",
+        const=True,
+        type=as_bool,
+        default=None,
+    )
     parser.add_argument("--no_true_jacobian_normalize", dest="true_jacobian_normalize", action="store_false")
     parser.add_argument("--true_jacobian_identity_mix", type=float)
     parser.add_argument("--true_jacobian_max_batch", type=int)
     parser.add_argument("--true_jacobian_reg_weight", type=float)
     parser.add_argument("--true_jacobian_complexity_weight", type=float)
-    parser.add_argument("--detach_true_jacobian_metric", dest="detach_true_jacobian_metric", action="store_true", default=None)
+    parser.add_argument(
+        "--detach_true_jacobian_metric",
+        dest="detach_true_jacobian_metric",
+        nargs="?",
+        const=True,
+        type=as_bool,
+        default=None,
+    )
     parser.add_argument("--no_detach_true_jacobian_metric", dest="detach_true_jacobian_metric", action="store_false")
-    parser.add_argument("--log_true_jacobian_stats", dest="log_true_jacobian_stats", action="store_true", default=None)
+    parser.add_argument(
+        "--log_true_jacobian_stats",
+        dest="log_true_jacobian_stats",
+        nargs="?",
+        const=True,
+        type=as_bool,
+        default=None,
+    )
     parser.add_argument("--no_log_true_jacobian_stats", dest="log_true_jacobian_stats", action="store_false")
     parser.add_argument("--true_jacobian_log_interval", type=int)
-    parser.add_argument("--save_jacobian_diagnostics", dest="save_jacobian_diagnostics", action="store_true", default=None)
+    parser.add_argument(
+        "--save_jacobian_diagnostics",
+        dest="save_jacobian_diagnostics",
+        nargs="?",
+        const=True,
+        type=as_bool,
+        default=None,
+    )
     parser.add_argument("--no_save_jacobian_diagnostics", dest="save_jacobian_diagnostics", action="store_false")
+    parser.add_argument("--curvature_min_warning_fraction", type=float)
+    parser.add_argument("--curvature_target_mode", choices=["complexity_linear", "complexity_squared", "none"])
 
     parser.add_argument("--num_train_samples", type=int)
     parser.add_argument("--num_val_samples", type=int)
@@ -109,6 +195,7 @@ def load_config(config_path: str, cli_args: argparse.Namespace) -> Dict[str, Any
         if key != "config" and value is not None:
             config[key] = value
     apply_config_defaults(config)
+    normalize_config_types(config)
     return config
 
 
@@ -131,9 +218,85 @@ def apply_config_defaults(config: Dict[str, Any]) -> None:
         "log_true_jacobian_stats": False,
         "true_jacobian_log_interval": 100,
         "save_jacobian_diagnostics": False,
+        "curvature_min_warning_fraction": 0.8,
+        "curvature_target_mode": "complexity_linear",
     }
     for key, value in defaults.items():
         config.setdefault(key, value)
+
+
+def normalize_config_types(config: Dict[str, Any]) -> None:
+    """Coerce config values after YAML loading and CLI overrides.
+
+    Some YAML parsers or hand-edited config files may treat values such as
+    ``2e-5`` as strings. Explicit normalization keeps optimizer construction
+    and numeric comparisons robust across environments.
+    """
+    apply_config_defaults(config)
+    bool_fields = {
+        "use_dummy_encoder",
+        "hf_local_files_only",
+        "freeze_encoder",
+        "return_complexity_features",
+        "use_true_jacobian_metric",
+        "true_jacobian_create_graph",
+        "true_jacobian_normalize",
+        "detach_true_jacobian_metric",
+        "log_true_jacobian_stats",
+        "save_jacobian_diagnostics",
+    }
+    int_fields = {
+        "seed",
+        "num_labels",
+        "hidden_dim",
+        "tangent_dim",
+        "dummy_vocab_size",
+        "max_position_embeddings",
+        "max_length",
+        "num_train_samples",
+        "num_val_samples",
+        "batch_size",
+        "num_workers",
+        "epochs",
+        "log_interval",
+        "true_jacobian_log_interval",
+    }
+    optional_int_fields = {"true_jacobian_max_batch"}
+    float_fields = {
+        "learning_rate",
+        "weight_decay",
+        "dropout",
+        "min_abs_curvature",
+        "max_abs_curvature",
+        "max_expmap_norm",
+        "max_tangent_norm",
+        "metric_delta_scale",
+        "metric_reg_weight",
+        "curvature_aux_weight",
+        "true_jacobian_reg_weight",
+        "true_jacobian_complexity_weight",
+        "true_jacobian_identity_mix",
+        "grad_clip_norm",
+        "curvature_min_warning_fraction",
+    }
+
+    for field in bool_fields:
+        if field in config and config[field] is not None:
+            config[field] = as_bool(config[field])
+    for field in int_fields:
+        if field in config and config[field] is not None:
+            config[field] = as_int(config[field])
+    for field in optional_int_fields:
+        if field in config and config[field] is not None:
+            config[field] = as_int(config[field])
+    for field in float_fields:
+        if field in config and config[field] is not None:
+            config[field] = as_float(config[field])
+
+    if config["curvature_target_mode"] not in {"complexity_linear", "complexity_squared", "none"}:
+        raise ValueError("curvature_target_mode must be one of: complexity_linear, complexity_squared, none")
+    if not 0.0 <= config["curvature_min_warning_fraction"] <= 1.0:
+        raise ValueError("curvature_min_warning_fraction must be in [0, 1]")
 
 
 def setup_logging(output_dir: Path) -> logging.Logger:
@@ -250,17 +413,61 @@ def move_batch_to_device(batch: Dict[str, TensorLike], device: torch.device) -> 
     return {key: value.to(device) if torch.is_tensor(value) else value for key, value in batch.items()}
 
 
-def safe_correlation(x: TensorLike, y: TensorLike, eps: float = 1e-8) -> float:
+def safe_pearson_correlation(
+    x: TensorLike,
+    y: TensorLike,
+    eps: float = 1e-8,
+    min_samples: int = 3,
+) -> Dict[str, Any]:
+    """Return Pearson correlation plus a validity flag.
+
+    Small batches and near-constant vectors produce misleading values such as
+    exactly +/-1 or NaN. Callers should log ``valid`` alongside ``value``.
+    """
     x_tensor = torch.as_tensor(x).detach().float().view(-1)
     y_tensor = torch.as_tensor(y).detach().float().view(-1)
-    if x_tensor.numel() < 2 or y_tensor.numel() < 2:
-        return float("nan")
+    count = min(x_tensor.numel(), y_tensor.numel())
+    if count < min_samples:
+        return {"value": None, "valid": False, "reason": "too_few_samples", "n": int(count)}
+    x_tensor = x_tensor[:count]
+    y_tensor = y_tensor[:count]
     x_centered = x_tensor - x_tensor.mean()
     y_centered = y_tensor - y_tensor.mean()
     denom = x_centered.norm() * y_centered.norm()
     if denom.item() <= eps:
-        return float("nan")
-    return float((x_centered * y_centered).sum().div(denom).item())
+        return {"value": None, "valid": False, "reason": "near_zero_variance", "n": int(count)}
+    value = float((x_centered * y_centered).sum().div(denom).item())
+    if not math.isfinite(value):
+        return {"value": None, "valid": False, "reason": "non_finite", "n": int(count)}
+    return {"value": value, "valid": True, "reason": "", "n": int(count)}
+
+
+def format_optional_float(value: Optional[float]) -> float:
+    return float("nan") if value is None else float(value)
+
+
+def normalized_complexity_target(complexity: torch.Tensor, mode: str) -> Optional[torch.Tensor]:
+    """Map complexity in [1, 4] to a normalized curvature target in [0, 1]."""
+    if mode == "none":
+        return None
+    normalized = ((complexity - 1.0) / 3.0).clamp(0.0, 1.0)
+    if mode == "complexity_linear":
+        return normalized
+    if mode == "complexity_squared":
+        return normalized.pow(2)
+    raise ValueError("curvature_target_mode must be one of: complexity_linear, complexity_squared, none")
+
+
+def target_abs_curvature_from_complexity(complexity: torch.Tensor, config: Dict[str, Any]) -> Optional[torch.Tensor]:
+    normalized_target = normalized_complexity_target(complexity, config.get("curvature_target_mode", "complexity_linear"))
+    if normalized_target is None:
+        return None
+    curvature_span = config["max_abs_curvature"] - config["min_abs_curvature"]
+    return config["min_abs_curvature"] + curvature_span * normalized_target
+
+
+def curvature_boundary_tolerance(config: Dict[str, Any]) -> float:
+    return max(1e-4, 0.1 * float(config["min_abs_curvature"]))
 
 
 def run_epoch(
@@ -313,6 +520,7 @@ def run_epoch(
             curvature_loss = torch.zeros((), dtype=loss.dtype, device=loss.device)
             jacobian_reg_loss = torch.zeros((), dtype=loss.dtype, device=loss.device)
             jacobian_complexity_loss = torch.zeros((), dtype=loss.dtype, device=loss.device)
+            target_abs_curvature_mean = torch.full((), float("nan"), dtype=loss.dtype, device=loss.device)
 
             if is_train and config["metric_reg_weight"] > 0:
                 loss = loss + config["metric_reg_weight"] * metric_reg_loss
@@ -322,11 +530,11 @@ def run_epoch(
                 and "complexity" in batch
             ):
                 complexity = batch["complexity"].view(-1, 1)
-                normalized_complexity = ((complexity - 1.0) / 3.0).clamp(0.0, 1.0)
-                curvature_span = config["max_abs_curvature"] - config["min_abs_curvature"]
-                target_abs_curvature = config["min_abs_curvature"] + curvature_span * normalized_complexity
-                curvature_loss = F.mse_loss(-output["curvature"], target_abs_curvature)
-                loss = loss + config["curvature_aux_weight"] * curvature_loss
+                target_abs_curvature = target_abs_curvature_from_complexity(complexity, config)
+                if target_abs_curvature is not None:
+                    target_abs_curvature_mean = target_abs_curvature.mean()
+                    curvature_loss = F.mse_loss(-output["curvature"], target_abs_curvature)
+                    loss = loss + config["curvature_aux_weight"] * curvature_loss
 
             if true_jacobian_enabled and is_train and "jacobian_frobenius" in output:
                 jacobian_frobenius = output["jacobian_frobenius"]
@@ -384,7 +592,7 @@ def run_epoch(
             mean_complexity = batch["complexity"].detach().mean().item() if "complexity" in batch else float("nan")
             log_message = (
                 "epoch=%d step=%d loss=%.4f ce=%.4f acc=%.4f curvature_loss=%.4f "
-                "metric_reg=%.6f mean_abs_c=%.4f mean_complexity=%.4f"
+                "metric_reg=%.6f mean_abs_c=%.4f mean_complexity=%.4f target_abs_c_mean=%.4f"
             )
             log_args = [
                 epoch,
@@ -396,23 +604,26 @@ def run_epoch(
                 metric_reg_loss.detach().item(),
                 mean_abs_curvature,
                 mean_complexity,
+                target_abs_curvature_mean.detach().item(),
             ]
             if true_jacobian_enabled and "jacobian_frobenius" in output:
                 jacobian_frobenius = output["jacobian_frobenius"].detach()
                 jacobian_std = jacobian_frobenius.std(unbiased=False).item()
                 corr_complexity_curvature = (
-                    safe_correlation(batch["complexity"], output["curvature"].detach().abs())
+                    safe_pearson_correlation(batch["complexity"], output["curvature"].detach().abs())
                     if "complexity" in batch
-                    else float("nan")
+                    else {"value": None, "valid": False, "reason": "missing_complexity", "n": 0}
                 )
                 corr_complexity_jacobian = (
-                    safe_correlation(batch["complexity"], jacobian_frobenius)
+                    safe_pearson_correlation(batch["complexity"], jacobian_frobenius)
                     if "complexity" in batch
-                    else float("nan")
+                    else {"value": None, "valid": False, "reason": "missing_complexity", "n": 0}
                 )
                 log_message += (
                     " jac_frob_mean=%.4f jac_frob_std=%.4f jac_reg=%.6f "
-                    "jac_complexity=%.6f corr_complexity_abs_c=%.4f corr_complexity_jac=%.4f"
+                    "jac_complexity=%.6f corr_complexity_abs_c_batch=%.4f "
+                    "corr_complexity_abs_c_batch_valid=%s corr_complexity_jac_batch=%.4f "
+                    "corr_complexity_jac_batch_valid=%s"
                 )
                 log_args.extend(
                     [
@@ -420,8 +631,10 @@ def run_epoch(
                         jacobian_std,
                         jacobian_reg_loss.detach().item(),
                         jacobian_complexity_loss.detach().item(),
-                        corr_complexity_curvature,
-                        corr_complexity_jacobian,
+                        format_optional_float(corr_complexity_curvature["value"]),
+                        str(corr_complexity_curvature["valid"]).lower(),
+                        format_optional_float(corr_complexity_jacobian["value"]),
+                        str(corr_complexity_jacobian["valid"]).lower(),
                     ]
                 )
                 if "jacobian_effective_rank" in output:
@@ -434,6 +647,184 @@ def run_epoch(
         "ce_loss": total_ce_loss / max(total_count, 1),
         "accuracy": total_correct / max(total_count, 1),
     }
+
+
+def aggregate_validation_diagnostics(
+    model: SemanticLorentzParser,
+    dataloader: DataLoader,
+    device: torch.device,
+    config: Dict[str, Any],
+    logger: logging.Logger,
+    epoch: int,
+) -> Dict[str, Any]:
+    """Aggregate curvature/Jacobian diagnostics across the full validation set."""
+    was_training = model.training
+    model.eval()
+
+    true_jacobian_enabled = bool(config.get("use_true_jacobian_metric", False))
+    abs_curvatures: List[torch.Tensor] = []
+    complexities: List[torch.Tensor] = []
+    jacobian_frobenius_values: List[torch.Tensor] = []
+    jacobian_rank_values: List[torch.Tensor] = []
+    target_abs_curvatures: List[torch.Tensor] = []
+    curvature_aux_losses: List[torch.Tensor] = []
+
+    with torch.set_grad_enabled(true_jacobian_enabled):
+        for batch in dataloader:
+            batch = move_batch_to_device(batch, device)
+            output = model(
+                input_ids=batch["input_ids"],
+                attention_mask=batch.get("attention_mask"),
+                labels=batch["labels"],
+                return_diagnostics=true_jacobian_enabled,
+            )
+            abs_curvature = output["curvature"].detach().abs().view(-1)
+            abs_curvatures.append(abs_curvature.cpu())
+            if "complexity" in batch:
+                complexity = batch["complexity"].detach().view(-1)
+                complexities.append(complexity.cpu())
+                target_abs_curvature = target_abs_curvature_from_complexity(complexity.view(-1, 1), config)
+                if target_abs_curvature is not None:
+                    target_abs_curvatures.append(target_abs_curvature.detach().view(-1).cpu())
+                    per_sample_loss = F.mse_loss(
+                        abs_curvature.view(-1, 1),
+                        target_abs_curvature.detach(),
+                        reduction="none",
+                    ).view(-1)
+                    curvature_aux_losses.append(per_sample_loss.cpu())
+            if "jacobian_frobenius" in output:
+                jacobian_frobenius_values.append(output["jacobian_frobenius"].detach().view(-1).cpu())
+            if "jacobian_effective_rank" in output:
+                jacobian_rank_values.append(output["jacobian_effective_rank"].detach().view(-1).cpu())
+
+    if was_training:
+        model.train(True)
+
+    abs_curvature_all = torch.cat(abs_curvatures) if abs_curvatures else torch.empty(0)
+    complexity_all = torch.cat(complexities) if complexities else torch.empty(0)
+    jacobian_frobenius_all = (
+        torch.cat(jacobian_frobenius_values) if jacobian_frobenius_values else torch.empty(0)
+    )
+    jacobian_rank_all = torch.cat(jacobian_rank_values) if jacobian_rank_values else torch.empty(0)
+    target_abs_curvature_all = (
+        torch.cat(target_abs_curvatures) if target_abs_curvatures else torch.empty(0)
+    )
+    curvature_aux_loss_all = torch.cat(curvature_aux_losses) if curvature_aux_losses else torch.empty(0)
+
+    min_abs_curvature = float(config["min_abs_curvature"])
+    max_abs_curvature = float(config["max_abs_curvature"])
+    boundary_tol = curvature_boundary_tolerance(config)
+    min_fraction = (
+        float((abs_curvature_all <= min_abs_curvature + boundary_tol).float().mean().item())
+        if abs_curvature_all.numel() > 0
+        else None
+    )
+    max_fraction = (
+        float((abs_curvature_all >= max_abs_curvature - boundary_tol).float().mean().item())
+        if abs_curvature_all.numel() > 0
+        else None
+    )
+    corr_complexity_abs_c = (
+        safe_pearson_correlation(complexity_all, abs_curvature_all)
+        if complexity_all.numel() > 0
+        else {"value": None, "valid": False, "reason": "missing_complexity", "n": 0}
+    )
+    corr_complexity_jac = (
+        safe_pearson_correlation(complexity_all, jacobian_frobenius_all)
+        if complexity_all.numel() > 0 and jacobian_frobenius_all.numel() > 0
+        else {"value": None, "valid": False, "reason": "missing_jacobian", "n": 0}
+    )
+
+    diagnostics = {
+        "epoch": epoch,
+        "num_samples": int(abs_curvature_all.numel()),
+        "mean_abs_c": tensor_mean(abs_curvature_all),
+        "std_abs_c": tensor_std(abs_curvature_all),
+        "mean_complexity": tensor_mean(complexity_all),
+        "jac_frob_mean": tensor_mean(jacobian_frobenius_all),
+        "jac_frob_std": tensor_std(jacobian_frobenius_all),
+        "jac_effective_rank_mean": tensor_mean(jacobian_rank_all),
+        "corr_complexity_abs_c": corr_complexity_abs_c["value"],
+        "corr_complexity_abs_c_valid": corr_complexity_abs_c["valid"],
+        "corr_complexity_abs_c_reason": corr_complexity_abs_c["reason"],
+        "corr_complexity_jac": corr_complexity_jac["value"],
+        "corr_complexity_jac_valid": corr_complexity_jac["valid"],
+        "corr_complexity_jac_reason": corr_complexity_jac["reason"],
+        "curvature_min_fraction": min_fraction,
+        "curvature_max_fraction": max_fraction,
+        "curvature_mean_to_min_ratio": (
+            tensor_mean(abs_curvature_all) / min_abs_curvature
+            if tensor_mean(abs_curvature_all) is not None and min_abs_curvature > 0
+            else None
+        ),
+        "curvature_aux_loss": tensor_mean(curvature_aux_loss_all),
+        "target_abs_curvature_mean": tensor_mean(target_abs_curvature_all),
+        "curvature_boundary_tolerance": boundary_tol,
+    }
+
+    write_json(Path(config["output_dir"]) / f"diagnostics_epoch_{epoch}.json", diagnostics)
+    logger.info(
+        "validation_diagnostics epoch=%d mean_abs_c=%.4f std_abs_c=%.4f mean_complexity=%.4f "
+        "jac_frob_mean=%.4f jac_frob_std=%.4f corr_complexity_abs_c_val=%.4f "
+        "corr_complexity_abs_c_val_valid=%s corr_complexity_jac_val=%.4f "
+        "corr_complexity_jac_val_valid=%s curvature_min_fraction=%.4f "
+        "curvature_max_fraction=%.4f curvature_mean_to_min_ratio=%.4f "
+        "curvature_aux_loss=%.6f target_abs_curvature_mean=%.4f",
+        epoch,
+        format_optional_float(diagnostics["mean_abs_c"]),
+        format_optional_float(diagnostics["std_abs_c"]),
+        format_optional_float(diagnostics["mean_complexity"]),
+        format_optional_float(diagnostics["jac_frob_mean"]),
+        format_optional_float(diagnostics["jac_frob_std"]),
+        format_optional_float(diagnostics["corr_complexity_abs_c"]),
+        str(diagnostics["corr_complexity_abs_c_valid"]).lower(),
+        format_optional_float(diagnostics["corr_complexity_jac"]),
+        str(diagnostics["corr_complexity_jac_valid"]).lower(),
+        format_optional_float(diagnostics["curvature_min_fraction"]),
+        format_optional_float(diagnostics["curvature_max_fraction"]),
+        format_optional_float(diagnostics["curvature_mean_to_min_ratio"]),
+        format_optional_float(diagnostics["curvature_aux_loss"]),
+        format_optional_float(diagnostics["target_abs_curvature_mean"]),
+    )
+    warning_fraction = float(config.get("curvature_min_warning_fraction", 0.8))
+    if diagnostics["curvature_min_fraction"] is not None and diagnostics["curvature_min_fraction"] > warning_fraction:
+        logger.warning(
+            "curvature collapse monitor: %.1f%% of validation samples are near min_abs_curvature=%.6f",
+            100.0 * diagnostics["curvature_min_fraction"],
+            min_abs_curvature,
+        )
+    return diagnostics
+
+
+def tensor_mean(values: torch.Tensor) -> Optional[float]:
+    if values.numel() == 0:
+        return None
+    value = float(values.float().mean().item())
+    return value if math.isfinite(value) else None
+
+
+def tensor_std(values: torch.Tensor) -> Optional[float]:
+    if values.numel() == 0:
+        return None
+    value = float(values.float().std(unbiased=False).item())
+    return value if math.isfinite(value) else None
+
+
+def write_json(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(json_safe(payload), handle, indent=2, sort_keys=True, allow_nan=False)
+        handle.write("\n")
+
+
+def json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [json_safe(item) for item in value]
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return value
 
 
 def save_jacobian_diagnostics(output: Dict[str, TensorLike], batch: Dict[str, TensorLike], path: Path) -> None:
@@ -537,11 +928,13 @@ def main() -> None:
 
     best_val_loss = float("inf")
     best_path = output_dir / "best_model.pth"
+    final_diagnostics: Optional[Dict[str, Any]] = None
     logger.info("labels=%s", train_dataset.label_names)
 
     for epoch in range(1, config["epochs"] + 1):
         train_metrics = run_epoch(model, train_loader, optimizer, device, config, logger, epoch)
         val_metrics = run_epoch(model, val_loader, None, device, config, logger, epoch)
+        final_diagnostics = aggregate_validation_diagnostics(model, val_loader, device, config, logger, epoch)
         logger.info(
             "epoch=%d train_loss=%.4f train_acc=%.4f val_loss=%.4f val_acc=%.4f",
             epoch,
@@ -556,6 +949,8 @@ def main() -> None:
             save_checkpoint(best_path, model, optimizer, config, epoch, val_metrics)
             logger.info("saved new best checkpoint to %s", best_path)
 
+    if final_diagnostics is not None:
+        write_json(output_dir / "diagnostics_final.json", final_diagnostics)
     logger.info("training complete best_val_loss=%.4f checkpoint=%s", best_val_loss, best_path)
 
 

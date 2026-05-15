@@ -101,6 +101,38 @@ torchrun --nproc_per_node=4 train.py \
   --output_dir outputs/ubai_bert_true_jacobian_complexity
 ```
 
+## UBAI Validation Notes
+
+The following checks have passed on UBAI:
+
+- `python -m pytest tests`
+- `python train.py --config configs/tiny_true_jacobian_smoke.yaml`
+- `python train.py --epochs 1 --num_train_samples 32 --num_val_samples 16 --batch_size 8`
+- BERT true-Jacobian 1 GPU smoke runs with batch sizes 1 and 2
+- A longer 1 GPU BERT true-Jacobian run with batch size 2, 3 epochs, and 1024 train samples
+
+Notes from those runs:
+
+- YAML scientific notation such as `2e-5` can be parsed as a string in some environments. `train.py` now normalizes numeric and boolean config values after loading, and BERT configs use plain decimal learning rates.
+- Batch-level correlations are not meaningful for tiny batches. Logs now mark batch correlations with validity flags and write full-validation diagnostics to `diagnostics_epoch_{epoch}.json` plus `diagnostics_final.json`.
+- The mock dataset is intentionally easy. High validation accuracy on mock data is a functionality check, not a research result.
+- Curvature can collapse near `min_abs_curvature`. Use `curvature_min_fraction`, `curvature_mean_to_min_ratio`, and the stronger-curvature ablation config to monitor this.
+- True Jacobian remains expensive. Start with `configs/bert_mock_fast_debug.yaml` or `configs/tiny_true_jacobian_smoke.yaml` before full BERT runs.
+
+One-GPU UBAI scripts:
+
+```bash
+bash scripts/run_ubai_1gpu_true_jacobian.sh
+bash scripts/run_ubai_1gpu_no_jacobian.sh
+bash scripts/run_ubai_1gpu_detached_jacobian.sh
+```
+
+Parse a log to CSV:
+
+```bash
+python scripts/parse_training_log.py --log logs/bert_true_jacobian_1gpu_bs2_e3_n1024.log
+```
+
 ## JSONL Dataset Format
 
 Use `dataset_type: jsonl`, `train_jsonl`, and optionally `val_jsonl`.
