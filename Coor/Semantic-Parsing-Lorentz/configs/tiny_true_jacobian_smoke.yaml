@@ -1,15 +1,17 @@
 seed: 42
 
-# Local smoke tests run without external downloads. Set this to false on the
-# cluster to use a HuggingFace encoder.
 use_dummy_encoder: true
 encoder_name: bert-base-uncased
 hf_local_files_only: false
 freeze_encoder: false
 
+dataset_type: mock
+complexity_mode: heuristic
+return_complexity_features: false
+
 num_labels: 8
-hidden_dim: 128
-tangent_dim: 64
+hidden_dim: 32
+tangent_dim: 8
 dummy_vocab_size: 30522
 max_position_embeddings: 128
 max_length: 64
@@ -23,34 +25,28 @@ metric_delta_scale: 0.05
 metric_reg_weight: 0.0001
 curvature_aux_weight: 0.01
 
-dataset_type: mock
-train_jsonl: null
-val_jsonl: null
-complexity_mode: synthetic
-return_complexity_features: false
-
-use_true_jacobian_metric: false
+use_true_jacobian_metric: true
 true_jacobian_target: lorentz
 true_jacobian_create_graph: true
 true_jacobian_normalize: true
 true_jacobian_identity_mix: 0.1
 true_jacobian_max_batch: null
+detach_true_jacobian_metric: false
 true_jacobian_reg_weight: 0.0
 true_jacobian_complexity_weight: 0.0
-detach_true_jacobian_metric: false
-log_true_jacobian_stats: false
-true_jacobian_log_interval: 100
+log_true_jacobian_stats: true
+true_jacobian_log_interval: 10
 save_jacobian_diagnostics: false
 
-num_train_samples: 512
-num_val_samples: 128
-batch_size: 16
+num_train_samples: 32
+num_val_samples: 16
+batch_size: 4
 num_workers: 0
 
-epochs: 5
+epochs: 1
 learning_rate: 0.0002
 weight_decay: 0.01
 grad_clip_norm: 1.0
-log_interval: 10
+log_interval: 2
 
-output_dir: outputs/lorentz_semantic_parser
+output_dir: outputs/tiny_true_jacobian_smoke

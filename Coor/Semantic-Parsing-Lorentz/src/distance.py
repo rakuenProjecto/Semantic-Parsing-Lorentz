@@ -7,6 +7,8 @@ for a hyperboloid with curvature c < 0 and radius R = 1 / sqrt(-c).
 
 from __future__ import annotations
 
+from typing import Optional
+
 import torch
 from torch import Tensor, nn
 
@@ -130,16 +132,45 @@ class LorentzBilinearDistance(nn.Module):
         effective_radius = torch.sqrt(denom)
         return (effective_radius * stable_acosh(arg, eps=self.eps, max_value=self.max_arg)).squeeze(-1)
 
-    def pairwise(self, x: Tensor, y: Tensor, c_x: Tensor, c_y: Tensor) -> Tensor:
-        """Pairwise distances between ``x`` with shape [B, D] and ``y`` [N, D]."""
+    def pairwise(
+        self,
+        x: Tensor,
+        y: Tensor,
+        c_x: Tensor,
+        c_y: Tensor,
+        query_local_metric: Optional[Tensor] = None,
+    ) -> Tensor:
+        """Pairwise distances between ``x`` with shape [B, D] and ``y`` [N, D].
+
+        Args:
+            x: Query Lorentz points with shape ``[B, D]``.
+            y: Label Lorentz points with shape ``[N, D]``.
+            c_x: Query curvatures with shape ``[B, 1]``.
+            c_y: Label curvatures with shape ``[N, 1]``.
+            query_local_metric: Optional true-Jacobian-derived metric
+                ``C_x = J_x J_x^T`` with shape ``[B, D, D]``. When provided,
+                the bilinear term is ``scale = (C_x x)^T W y``. This is a
+                local metric correction induced by the sensitivity of the
+                Lorentz representation to the CLS embedding.
+        """
         metric = self.metric_tensor
-        scale = torch.einsum("bd,de,ne->bn", x, metric, y)
+        if query_local_metric is not None:
+            if query_local_metric.shape != (x.size(0), x.size(1), x.size(1)):
+                raise ValueError(
+                    "query_local_metric must have shape [B, D, D] matching query points; "
+                    f"got {tuple(query_local_metric.shape)} for x={tuple(x.shape)}"
+                )
+            x_for_scale = torch.einsum("bij,bj->bi", query_local_metric, x)
+        else:
+            x_for_scale = x
+        scale = torch.einsum("bd,de,ne->bn", x_for_scale, metric, y)
 
         radius_x = curvature_to_radius(c_x, eps=self.eps).to(dtype=x.dtype, device=x.device)
         radius_y = curvature_to_radius(c_y, eps=self.eps).to(dtype=x.dtype, device=x.device)
         denom = (radius_x @ radius_y.transpose(0, 1)).clamp_min(self.eps)
 
         arg = -scale / denom
+        self.last_pairwise_clamp_fraction = (arg < 1.0 + self.eps).detach().float().mean()
         effective_radius = torch.sqrt(denom)
         return effective_radius * stable_acosh(arg, eps=self.eps, max_value=self.max_arg)
 
