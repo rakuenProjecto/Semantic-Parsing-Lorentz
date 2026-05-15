@@ -1,0 +1,37 @@
+seed: 42
+
+# Local smoke tests run without external downloads. Set this to false on the
+# cluster to use a HuggingFace encoder.
+use_dummy_encoder: true
+encoder_name: bert-base-uncased
+hf_local_files_only: false
+freeze_encoder: false
+
+num_labels: 8
+hidden_dim: 128
+tangent_dim: 64
+dummy_vocab_size: 30522
+max_position_embeddings: 128
+max_length: 64
+dropout: 0.1
+
+min_abs_curvature: 0.05
+max_abs_curvature: 5.0
+max_expmap_norm: 15.0
+max_tangent_norm: 5.0
+metric_delta_scale: 0.05
+metric_reg_weight: 0.0001
+curvature_aux_weight: 0.01
+
+num_train_samples: 512
+num_val_samples: 128
+batch_size: 16
+num_workers: 0
+
+epochs: 5
+learning_rate: 0.0002
+weight_decay: 0.01
+grad_clip_norm: 1.0
+log_interval: 10
+
+output_dir: outputs/lorentz_semantic_parser
