@@ -1,7 +1,7 @@
 {
   "consecutive_failures": 0,
   "current_state": "dry_run",
-  "cycle": 5,
+  "cycle": 6,
   "dry_run_plan": [
     [
       "git",
@@ -21,8 +21,12 @@
     ]
   ],
   "improvement_failures": 0,
-  "last_commit_hash": "6c24a7f0e42b9e6e16122823a4085ce732560439",
-  "last_cycle_timestamp": "20260516_163341",
+  "last_commit_hash": "acd64ee7ccc26db593bfbf98fc46cbc1dfff3ddc",
+  "last_commit_result": {
+    "committed": true,
+    "pushed": true
+  },
+  "last_cycle_timestamp": "20260516_163505",
   "last_status": "dry_run_planned",
   "oom_count": 0
 }
