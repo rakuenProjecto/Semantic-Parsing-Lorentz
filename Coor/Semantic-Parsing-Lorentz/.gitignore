@@ -1,0 +1,14 @@
+# Generated experiment artifacts.
+outputs/
+logs/
+reports/history/
+reports/gpu_probe.json
+reports/gpu_probe.md
+reports/auto_batch_probe.json
+reports/auto_batch_probe.md
+reports/autonomous_loop_state.stale_backup_*.json
+reports/autonomous_loop_state.manual_stop_backup_*.json
+reports/manual_stop_snapshot_*/
+reports/codex_latest_work_report.txt
+reports/codex_next_action_report.txt
+codex_latest_work_report.txt
