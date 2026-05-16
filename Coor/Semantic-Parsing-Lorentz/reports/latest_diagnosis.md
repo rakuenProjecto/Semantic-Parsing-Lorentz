@@ -1,0 +1,4 @@
+# Latest Diagnosis
+
+- status: `pass`
+

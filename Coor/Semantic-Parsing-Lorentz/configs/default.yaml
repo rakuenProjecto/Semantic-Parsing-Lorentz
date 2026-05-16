@@ -68,6 +68,11 @@ epochs: 5
 learning_rate: 0.0002
 weight_decay: 0.01
 grad_clip_norm: 1.0
+gradient_accumulation_steps: 1
+amp: false
+mixed_precision: false
+log_gpu_every_n_steps: 0
+empty_cache_on_epoch_end: false
 log_interval: 10
 
 output_dir: outputs/lorentz_semantic_parser

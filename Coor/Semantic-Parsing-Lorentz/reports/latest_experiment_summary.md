@@ -1,0 +1,34 @@
+# Latest Experiment Summary
+
+- output_dir: `outputs/cycle_short_manual_20260516_163301`
+- log_path: `logs/cycle_short_manual_20260516_163301.log`
+- best_val_loss: `1.9109`
+- final_val_loss: `1.9109`
+- final_val_acc: `0.9688`
+- pred_abs_c_mean: `0.7957758903503418`
+- pred_abs_c_std: `0.053170233964920044`
+- pred_abs_c_min: `0.7188725471496582`
+- pred_abs_c_max: `0.9094458222389221`
+- target_abs_c_mean: `0.8341885209083557`
+- target_abs_c_std: `0.3755866587162018`
+- curvature_min_fraction: `0.0`
+- curvature_max_fraction: `0.0`
+- curvature_mean_to_min_ratio: `15.915517807006836`
+- curvature_collapse_penalty: `0.0`
+- curvature_spread_penalty: `0.0`
+- curvature_total_aux_loss: `0.006835945416241884`
+- jac_frob_mean: `3.2436695098876953`
+- jac_frob_std: `0.5324113965034485`
+- jac_reg: `2.649696`
+- jac_complexity: `0.022825`
+- corr_complexity_abs_c_val: `0.24426482617855072`
+- corr_complexity_abs_c_val_valid: `True`
+- corr_complexity_jac_val: `0.1816984862089157`
+- corr_complexity_jac_val_valid: `True`
+- gpu_name: `NVIDIA GeForce RTX 3090`
+- gpu_mem_peak_mb: `None`
+- batch_size: `8`
+- effective_batch_size: `8`
+- amp_enabled: `False`
+- cycle_id: `manual`
+- git_commit: `6c24a7f0e42b9e6e16122823a4085ce732560439`

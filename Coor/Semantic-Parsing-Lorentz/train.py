@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import random
+import time
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -196,6 +197,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning_rate", type=float)
     parser.add_argument("--weight_decay", type=float)
     parser.add_argument("--grad_clip_norm", type=float)
+    parser.add_argument("--max_grad_norm", type=float)
+    parser.add_argument("--gradient_accumulation_steps", type=int)
+    parser.add_argument("--amp", dest="amp", nargs="?", const=True, type=as_bool, default=None)
+    parser.add_argument("--no_amp", dest="amp", action="store_false")
+    parser.add_argument("--mixed_precision", dest="mixed_precision", nargs="?", const=True, type=as_bool, default=None)
+    parser.add_argument("--no_mixed_precision", dest="mixed_precision", action="store_false")
+    parser.add_argument("--log_gpu_every_n_steps", type=int)
+    parser.add_argument("--empty_cache_on_epoch_end", dest="empty_cache_on_epoch_end", nargs="?", const=True, type=as_bool, default=None)
+    parser.add_argument("--no_empty_cache_on_epoch_end", dest="empty_cache_on_epoch_end", action="store_false")
     parser.add_argument("--log_interval", type=int)
     parser.add_argument("--output_dir", type=str)
     return parser.parse_args()
@@ -253,6 +263,11 @@ def apply_config_defaults(config: Dict[str, Any]) -> None:
         "curvature_min_margin": 0.1,
         "curvature_min_std": 0.02,
         "curvature_init_abs_c": None,
+        "gradient_accumulation_steps": 1,
+        "amp": False,
+        "mixed_precision": False,
+        "log_gpu_every_n_steps": 0,
+        "empty_cache_on_epoch_end": False,
     }
     for key, value in defaults.items():
         config.setdefault(key, value)
@@ -280,6 +295,9 @@ def normalize_config_types(config: Dict[str, Any]) -> None:
         "curvature_target_normalize",
         "curvature_target_centering",
         "enable_curvature_anti_collapse",
+        "amp",
+        "mixed_precision",
+        "empty_cache_on_epoch_end",
     }
     int_fields = {
         "seed",
@@ -297,6 +315,8 @@ def normalize_config_types(config: Dict[str, Any]) -> None:
         "log_interval",
         "true_jacobian_log_interval",
         "curvature_target_warmup_epochs",
+        "gradient_accumulation_steps",
+        "log_gpu_every_n_steps",
     }
     optional_int_fields = {"true_jacobian_max_batch"}
     float_fields = {
@@ -314,6 +334,7 @@ def normalize_config_types(config: Dict[str, Any]) -> None:
         "true_jacobian_complexity_weight",
         "true_jacobian_identity_mix",
         "grad_clip_norm",
+        "max_grad_norm",
         "curvature_min_warning_fraction",
         "curvature_target_scale",
         "curvature_collapse_weight",
@@ -346,6 +367,10 @@ def normalize_config_types(config: Dict[str, Any]) -> None:
         raise ValueError("curvature_parameterization must be one of: sigmoid_bounded, softplus_floor")
     if not 0.0 <= config["curvature_min_warning_fraction"] <= 1.0:
         raise ValueError("curvature_min_warning_fraction must be in [0, 1]")
+    if config.get("max_grad_norm") is not None:
+        config["grad_clip_norm"] = config["max_grad_norm"]
+    if config["gradient_accumulation_steps"] < 1:
+        raise ValueError("gradient_accumulation_steps must be >= 1")
 
 
 def setup_logging(output_dir: Path) -> logging.Logger:
@@ -610,11 +635,17 @@ def run_epoch(
     diagnostics_saved = False
     true_jacobian_enabled = bool(config.get("use_true_jacobian_metric", False))
     jacobian_log_interval = int(config.get("true_jacobian_log_interval", 100))
+    grad_accum_steps = int(config.get("gradient_accumulation_steps", 1))
+    use_amp = bool(config.get("amp", False) or config.get("mixed_precision", False)) and device.type == "cuda"
+    log_gpu_every_n_steps = int(config.get("log_gpu_every_n_steps", 0))
+    effective_batch_size = int(config.get("batch_size", 1)) * grad_accum_steps
+    epoch_start_time = time.perf_counter()
 
+    if is_train:
+        optimizer.zero_grad(set_to_none=True)
     for step, batch in enumerate(dataloader, start=1):
+        step_start_time = time.perf_counter()
         batch = move_batch_to_device(batch, device)
-        if is_train:
-            optimizer.zero_grad(set_to_none=True)
 
         need_diagnostics = (
             true_jacobian_enabled
@@ -628,25 +659,29 @@ def run_epoch(
             )
         )
 
+        autocast_enabled = use_amp and not true_jacobian_enabled
         with torch.set_grad_enabled(is_train or true_jacobian_enabled):
-            output = model(
-                input_ids=batch["input_ids"],
-                attention_mask=batch.get("attention_mask"),
-                labels=batch["labels"],
-                return_diagnostics=need_diagnostics,
-            )
-            ce_loss = output["loss"]
-            loss = ce_loss
-            metric_reg_loss = model.metric_regularization()
-            curvature_loss = torch.zeros((), dtype=loss.dtype, device=loss.device)
-            curvature_collapse_penalty = torch.zeros((), dtype=loss.dtype, device=loss.device)
-            curvature_spread_penalty = torch.zeros((), dtype=loss.dtype, device=loss.device)
-            curvature_distribution_penalty = torch.zeros((), dtype=loss.dtype, device=loss.device)
-            curvature_total_aux_loss = torch.zeros((), dtype=loss.dtype, device=loss.device)
-            jacobian_reg_loss = torch.zeros((), dtype=loss.dtype, device=loss.device)
-            jacobian_complexity_loss = torch.zeros((), dtype=loss.dtype, device=loss.device)
-            target_abs_curvature_mean = torch.full((), float("nan"), dtype=loss.dtype, device=loss.device)
-            target_abs_curvature: Optional[torch.Tensor] = None
+            autocast_device = "cuda" if device.type == "cuda" else "cpu"
+            autocast_context = torch.autocast(device_type=autocast_device, enabled=autocast_enabled)
+            with autocast_context:
+                output = model(
+                    input_ids=batch["input_ids"],
+                    attention_mask=batch.get("attention_mask"),
+                    labels=batch["labels"],
+                    return_diagnostics=need_diagnostics,
+                )
+                ce_loss = output["loss"]
+                loss = ce_loss
+                metric_reg_loss = model.metric_regularization()
+                curvature_loss = torch.zeros((), dtype=loss.dtype, device=loss.device)
+                curvature_collapse_penalty = torch.zeros((), dtype=loss.dtype, device=loss.device)
+                curvature_spread_penalty = torch.zeros((), dtype=loss.dtype, device=loss.device)
+                curvature_distribution_penalty = torch.zeros((), dtype=loss.dtype, device=loss.device)
+                curvature_total_aux_loss = torch.zeros((), dtype=loss.dtype, device=loss.device)
+                jacobian_reg_loss = torch.zeros((), dtype=loss.dtype, device=loss.device)
+                jacobian_complexity_loss = torch.zeros((), dtype=loss.dtype, device=loss.device)
+                target_abs_curvature_mean = torch.full((), float("nan"), dtype=loss.dtype, device=loss.device)
+                target_abs_curvature: Optional[torch.Tensor] = None
 
             if is_train and config["metric_reg_weight"] > 0:
                 loss = loss + config["metric_reg_weight"] * metric_reg_loss
@@ -711,9 +746,12 @@ def run_epoch(
                 raise FloatingPointError(f"non-finite loss at epoch={epoch}, step={step}")
 
             if is_train:
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), config["grad_clip_norm"])
-                optimizer.step()
+                (loss / grad_accum_steps).backward()
+                should_step_optimizer = step % grad_accum_steps == 0 or step == len(dataloader)
+                if should_step_optimizer:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), config["grad_clip_norm"])
+                    optimizer.step()
+                    optimizer.zero_grad(set_to_none=True)
 
             if (
                 true_jacobian_enabled
@@ -741,6 +779,8 @@ def run_epoch(
             )
         )
         if should_log_step:
+            step_time_sec = time.perf_counter() - step_start_time
+            samples_per_sec = batch_size / max(step_time_sec, 1e-8)
             avg_loss = total_loss / max(total_count, 1)
             avg_ce_loss = total_ce_loss / max(total_count, 1)
             avg_acc = total_correct / max(total_count, 1)
@@ -749,7 +789,8 @@ def run_epoch(
             log_message = (
                 "epoch=%d step=%d loss=%.4f ce=%.4f acc=%.4f curvature_loss=%.4f "
                 "metric_reg=%.6f mean_abs_c=%.4f mean_complexity=%.4f target_abs_c_mean=%.4f "
-                "curv_collapse=%.6f curv_spread=%.6f curv_total_aux=%.6f"
+                "curv_collapse=%.6f curv_spread=%.6f curv_total_aux=%.6f "
+                "effective_batch_size=%d step_time_sec=%.4f samples_per_sec=%.2f amp_enabled=%s"
             )
             log_args = [
                 epoch,
@@ -765,6 +806,10 @@ def run_epoch(
                 curvature_collapse_penalty.detach().item(),
                 curvature_spread_penalty.detach().item(),
                 curvature_total_aux_loss.detach().item(),
+                effective_batch_size,
+                step_time_sec,
+                samples_per_sec,
+                str(autocast_enabled).lower(),
             ]
             if true_jacobian_enabled and "jacobian_frobenius" in output:
                 jacobian_frobenius = output["jacobian_frobenius"].detach()
@@ -801,11 +846,28 @@ def run_epoch(
                     log_message += " jac_rank_mean=%.4f"
                     log_args.append(torch.nanmean(output["jacobian_effective_rank"].detach()).item())
             logger.info(log_message, *log_args)
+        if (
+            log_gpu_every_n_steps > 0
+            and device.type == "cuda"
+            and step % log_gpu_every_n_steps == 0
+            and torch.cuda.is_available()
+        ):
+            logger.info(
+                "gpu_memory step=%d allocated_mb=%.1f reserved_mb=%.1f max_allocated_mb=%.1f",
+                step,
+                torch.cuda.memory_allocated(device) / (1024 * 1024),
+                torch.cuda.memory_reserved(device) / (1024 * 1024),
+                torch.cuda.max_memory_allocated(device) / (1024 * 1024),
+            )
 
+    if bool(config.get("empty_cache_on_epoch_end", False)) and device.type == "cuda" and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    epoch_time_sec = time.perf_counter() - epoch_start_time
     return {
         "loss": total_loss / max(total_count, 1),
         "ce_loss": total_ce_loss / max(total_count, 1),
         "accuracy": total_correct / max(total_count, 1),
+        "epoch_time_sec": epoch_time_sec,
     }
 
 

@@ -141,6 +141,67 @@ Parse a log to CSV:
 python scripts/parse_training_log.py --log logs/bert_true_jacobian_1gpu_bs2_e3_n1024.log
 ```
 
+## Autonomous UBAI Experiment Loop
+
+The autonomous loop runs repeated experiment cycles on UBAI, summarizes
+diagnostics, diagnoses curvature/Jacobian/training/GPU issues, applies
+conservative config-first fixes, and can commit/push successful cycles.
+
+Start the loop:
+
+```bash
+bash scripts/run_autonomous_loop.sh
+bash scripts/run_autonomous_loop.sh --mode short
+bash scripts/run_autonomous_loop.sh --mode full
+```
+
+Run it detached:
+
+```bash
+nohup bash scripts/run_autonomous_loop.sh --mode auto > logs/autonomous_loop_nohup.log 2>&1 &
+```
+
+Stop the loop safely before the next cycle starts:
+
+```bash
+touch STOP_AUTONOMOUS_LOOP
+```
+
+Check status:
+
+```bash
+tail -f logs/autonomous_loop_nohup.log
+cat reports/autonomous_loop_state.json
+cat reports/latest_diagnosis.md
+```
+
+Modes:
+
+- `debug`: tiny dummy-encoder anti-collapse run.
+- `short`: one-epoch BERT full-like anti-collapse run.
+- `full`: three-epoch BERT run.
+- `auto`: GPU probe, auto batch probe, tests, smoke run, debug, then short.
+
+GPU probing:
+
+```bash
+python scripts/gpu_probe.py
+python scripts/auto_batch_probe.py --config configs/bert_true_jacobian_anti_collapse_debug.yaml
+```
+
+Reports:
+
+- `reports/gpu_probe.json` and `.md`: CUDA and VRAM status.
+- `reports/auto_batch_probe.json` and `.md`: largest successful and safe batch size.
+- `reports/latest_experiment_summary.json` and `.md`: latest metrics from `outputs/*/diagnostics_final.json` and logs.
+- `reports/latest_diagnosis.json` and `.md`: collapse, Jacobian, training, and GPU utilization diagnosis.
+- `reports/codex_next_action_prompt.md`: next-cycle context and warnings.
+
+Do not commit `outputs/`, `logs/`, `*.pth`, `.env`, API tokens, SSH private
+keys, or private credential files. The mock dataset is intentionally easy:
+`val_acc=1.0` on mock data is a functionality check, not paper-level semantic
+parsing performance.
+
 ## JSONL Dataset Format
 
 Use `dataset_type: jsonl`, `train_jsonl`, and optionally `val_jsonl`.
