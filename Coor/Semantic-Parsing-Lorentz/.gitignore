@@ -12,3 +12,6 @@ reports/manual_stop_snapshot_*/
 reports/codex_latest_work_report.txt
 reports/codex_next_action_report.txt
 codex_latest_work_report.txt
+
+# Local real datasets
+/data/real/
