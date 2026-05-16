@@ -91,6 +91,12 @@ python train.py \
   --true_jacobian_target lorentz
 ```
 
+True Jacobian with curvature anti-collapse controls:
+
+```bash
+python train.py --config configs/bert_true_jacobian_anti_collapse_debug.yaml
+```
+
 UBAI BERT run:
 
 ```bash
@@ -115,14 +121,16 @@ Notes from those runs:
 
 - YAML scientific notation such as `2e-5` can be parsed as a string in some environments. `train.py` now normalizes numeric and boolean config values after loading, and BERT configs use plain decimal learning rates.
 - Batch-level correlations are not meaningful for tiny batches. Logs now mark batch correlations with validity flags and write full-validation diagnostics to `diagnostics_epoch_{epoch}.json` plus `diagnostics_final.json`.
-- The mock dataset is intentionally easy. High validation accuracy on mock data is a functionality check, not a research result.
-- Curvature can collapse near `min_abs_curvature`. Use `curvature_min_fraction`, `curvature_mean_to_min_ratio`, and the stronger-curvature ablation config to monitor this.
+- The mock dataset is intentionally easy. A validation accuracy of `1.0` on mock data is a functionality check, not paper-level semantic parsing performance.
+- Curvature can collapse near `min_abs_curvature`. Treat `mean_abs_c` near `0.05` together with `curvature_min_fraction=1.0` as curvature collapse. Use `pred_abs_c_*`, `target_abs_c_*`, `curvature_min_fraction`, `curvature_mean_to_min_ratio`, `curvature_collapse_penalty`, and `curvature_spread_penalty` in the diagnostics JSON files to monitor this.
+- `configs/bert_true_jacobian_anti_collapse.yaml` keeps the true autograd Jacobian path but uses `curvature_parameterization: softplus_floor`, `curvature_init_abs_c`, target scaling, sample-wise floor penalties, raw-floor penalties, and spread penalties. Tune `curvature_anti_collapse_weight`, `curvature_target_scale`, `curvature_min_margin`, and `curvature_spread_weight` only after checking that classification loss and Jacobian diagnostics remain finite.
 - True Jacobian remains expensive. Start with `configs/bert_mock_fast_debug.yaml` or `configs/tiny_true_jacobian_smoke.yaml` before full BERT runs.
 
 One-GPU UBAI scripts:
 
 ```bash
 bash scripts/run_ubai_1gpu_true_jacobian.sh
+bash scripts/run_ubai_1gpu_true_jacobian_anti_collapse.sh
 bash scripts/run_ubai_1gpu_no_jacobian.sh
 bash scripts/run_ubai_1gpu_detached_jacobian.sh
 ```

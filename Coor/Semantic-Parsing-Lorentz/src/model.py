@@ -70,27 +70,54 @@ class DynamicCurvaturePredictor(nn.Module):
         hidden_dim: int,
         min_abs_curvature: float = 0.05,
         max_abs_curvature: float = 5.0,
+        parameterization: str = "sigmoid_bounded",
+        init_abs_curvature: Optional[float] = None,
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
         if min_abs_curvature <= 0 or max_abs_curvature <= min_abs_curvature:
             raise ValueError("curvature bounds must satisfy 0 < min_abs < max_abs")
+        if parameterization not in {"sigmoid_bounded", "softplus_floor"}:
+            raise ValueError("parameterization must be one of: sigmoid_bounded, softplus_floor")
 
         self.min_abs_curvature = min_abs_curvature
         self.max_abs_curvature = max_abs_curvature
+        self.parameterization = parameterization
+        final = nn.Linear(hidden_dim, 1)
+        if init_abs_curvature is not None:
+            init_abs_curvature = min(max(init_abs_curvature, min_abs_curvature + 1e-6), max_abs_curvature)
+            with torch.no_grad():
+                if parameterization == "softplus_floor":
+                    offset = torch.tensor(init_abs_curvature - min_abs_curvature)
+                    final.bias.fill_(float(torch.log(torch.expm1(offset.clamp_min(1e-6)))))
+                else:
+                    span = max_abs_curvature - min_abs_curvature
+                    normalized = torch.tensor((init_abs_curvature - min_abs_curvature) / span)
+                    normalized = normalized.clamp(1e-6, 1.0 - 1e-6)
+                    final.bias.fill_(float(torch.logit(normalized)))
+                final.weight.mul_(0.1)
+
         self.net = nn.Sequential(
             nn.LayerNorm(input_dim),
             nn.Linear(input_dim, hidden_dim),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, 1),
+            final,
         )
 
-    def forward(self, cls_embedding: Tensor) -> Tensor:
-        raw = self.net(cls_embedding)
-        span = self.max_abs_curvature - self.min_abs_curvature
-        abs_curvature = self.min_abs_curvature + span * torch.sigmoid(raw)
+    def raw(self, cls_embedding: Tensor) -> Tensor:
+        return self.net(cls_embedding)
+
+    def forward_from_raw(self, raw: Tensor) -> Tensor:
+        if self.parameterization == "softplus_floor":
+            abs_curvature = self.min_abs_curvature + F.softplus(raw)
+        else:
+            span = self.max_abs_curvature - self.min_abs_curvature
+            abs_curvature = self.min_abs_curvature + span * torch.sigmoid(raw)
         return -abs_curvature
+
+    def forward(self, cls_embedding: Tensor) -> Tensor:
+        return self.forward_from_raw(self.raw(cls_embedding))
 
 
 class SemanticLorentzParser(nn.Module):
@@ -109,6 +136,8 @@ class SemanticLorentzParser(nn.Module):
         freeze_encoder: bool = False,
         min_abs_curvature: float = 0.05,
         max_abs_curvature: float = 5.0,
+        curvature_parameterization: str = "sigmoid_bounded",
+        curvature_init_abs_c: Optional[float] = None,
         max_expmap_norm: float = 15.0,
         max_tangent_norm: float = 5.0,
         metric_delta_scale: float = 0.05,
@@ -179,6 +208,8 @@ class SemanticLorentzParser(nn.Module):
             hidden_dim=max(encoder_hidden_dim // 2, 32),
             min_abs_curvature=min_abs_curvature,
             max_abs_curvature=max_abs_curvature,
+            parameterization=curvature_parameterization,
+            init_abs_curvature=curvature_init_abs_c,
             dropout=dropout,
         )
 
@@ -220,6 +251,11 @@ class SemanticLorentzParser(nn.Module):
         """Predict negative curvatures from CLS embeddings with shape ``[B, 1]``."""
         return self.curvature_head(cls_embedding)
 
+    def curvature_with_raw_from_cls(self, cls_embedding: Tensor) -> Tuple[Tensor, Tensor]:
+        """Predict negative curvatures and expose the raw head output."""
+        raw = self.curvature_head.raw(cls_embedding)
+        return self.curvature_head.forward_from_raw(raw), raw
+
     def lorentz_point_from_cls(
         self,
         cls_embedding: Tensor,
@@ -258,7 +294,9 @@ class SemanticLorentzParser(nn.Module):
         cls_embedding = self.encode_cls(input_ids=input_ids, attention_mask=attention_mask)
 
         rng_state = self._capture_rng_state(cls_embedding.device) if self.use_true_jacobian_metric else None
-        query_points, tangent, curvature = self.lorentz_point_from_cls(cls_embedding, return_components=True)
+        tangent = self.tangent_from_cls(cls_embedding)
+        curvature, curvature_raw = self.curvature_with_raw_from_cls(cls_embedding)
+        query_points = lorentz_expmap0(tangent, curvature, max_norm=self.max_expmap_norm)
         query_local_metric: Optional[Tensor] = None
         true_jacobian: Optional[Tensor] = None
         jacobian_frobenius: Optional[Tensor] = None
@@ -292,6 +330,7 @@ class SemanticLorentzParser(nn.Module):
             "logits": logits,
             "distances": distances,
             "curvature": curvature,
+            "curvature_raw": curvature_raw,
             "label_curvature": label_curvature,
         }
         if jacobian_frobenius is not None:

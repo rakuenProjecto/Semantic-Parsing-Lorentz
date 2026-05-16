@@ -91,6 +91,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--metric_delta_scale", type=float)
     parser.add_argument("--metric_reg_weight", type=float)
     parser.add_argument("--curvature_aux_weight", type=float)
+    parser.add_argument("--curvature_parameterization", choices=["sigmoid_bounded", "softplus_floor"])
 
     parser.add_argument("--dataset_type", choices=["mock", "jsonl"])
     parser.add_argument("--train_jsonl", type=str)
@@ -168,6 +169,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no_save_jacobian_diagnostics", dest="save_jacobian_diagnostics", action="store_false")
     parser.add_argument("--curvature_min_warning_fraction", type=float)
     parser.add_argument("--curvature_target_mode", choices=["complexity_linear", "complexity_squared", "none"])
+    parser.add_argument("--curvature_target_warmup_epochs", type=int)
+    parser.add_argument("--curvature_target_scale", type=float)
+    parser.add_argument("--curvature_target_normalize", dest="curvature_target_normalize", nargs="?", const=True, type=as_bool, default=None)
+    parser.add_argument("--no_curvature_target_normalize", dest="curvature_target_normalize", action="store_false")
+    parser.add_argument("--curvature_target_centering", dest="curvature_target_centering", nargs="?", const=True, type=as_bool, default=None)
+    parser.add_argument("--no_curvature_target_centering", dest="curvature_target_centering", action="store_false")
+    parser.add_argument("--enable_curvature_anti_collapse", dest="enable_curvature_anti_collapse", nargs="?", const=True, type=as_bool, default=None)
+    parser.add_argument("--no_curvature_anti_collapse", dest="enable_curvature_anti_collapse", action="store_false")
+    parser.add_argument("--curvature_collapse_weight", type=float)
+    parser.add_argument("--curvature_spread_weight", type=float)
+    parser.add_argument("--curvature_distribution_weight", type=float)
+    parser.add_argument("--curvature_anti_collapse_weight", type=float)
+    parser.add_argument("--curvature_floor_penalty_weight", type=float)
+    parser.add_argument("--curvature_raw_floor_penalty_weight", type=float)
+    parser.add_argument("--curvature_min_margin", type=float)
+    parser.add_argument("--curvature_min_std", type=float)
+    parser.add_argument("--curvature_init_abs_c", type=float)
 
     parser.add_argument("--num_train_samples", type=int)
     parser.add_argument("--num_val_samples", type=int)
@@ -220,6 +238,21 @@ def apply_config_defaults(config: Dict[str, Any]) -> None:
         "save_jacobian_diagnostics": False,
         "curvature_min_warning_fraction": 0.8,
         "curvature_target_mode": "complexity_linear",
+        "curvature_parameterization": "sigmoid_bounded",
+        "curvature_target_warmup_epochs": 0,
+        "curvature_target_scale": 1.0,
+        "curvature_target_normalize": False,
+        "curvature_target_centering": False,
+        "enable_curvature_anti_collapse": False,
+        "curvature_collapse_weight": 0.0,
+        "curvature_spread_weight": 0.0,
+        "curvature_distribution_weight": 0.0,
+        "curvature_anti_collapse_weight": 0.0,
+        "curvature_floor_penalty_weight": 1.0,
+        "curvature_raw_floor_penalty_weight": 0.0,
+        "curvature_min_margin": 0.1,
+        "curvature_min_std": 0.02,
+        "curvature_init_abs_c": None,
     }
     for key, value in defaults.items():
         config.setdefault(key, value)
@@ -244,6 +277,9 @@ def normalize_config_types(config: Dict[str, Any]) -> None:
         "detach_true_jacobian_metric",
         "log_true_jacobian_stats",
         "save_jacobian_diagnostics",
+        "curvature_target_normalize",
+        "curvature_target_centering",
+        "enable_curvature_anti_collapse",
     }
     int_fields = {
         "seed",
@@ -260,6 +296,7 @@ def normalize_config_types(config: Dict[str, Any]) -> None:
         "epochs",
         "log_interval",
         "true_jacobian_log_interval",
+        "curvature_target_warmup_epochs",
     }
     optional_int_fields = {"true_jacobian_max_batch"}
     float_fields = {
@@ -278,6 +315,16 @@ def normalize_config_types(config: Dict[str, Any]) -> None:
         "true_jacobian_identity_mix",
         "grad_clip_norm",
         "curvature_min_warning_fraction",
+        "curvature_target_scale",
+        "curvature_collapse_weight",
+        "curvature_spread_weight",
+        "curvature_distribution_weight",
+        "curvature_anti_collapse_weight",
+        "curvature_floor_penalty_weight",
+        "curvature_raw_floor_penalty_weight",
+        "curvature_min_margin",
+        "curvature_min_std",
+        "curvature_init_abs_c",
     }
 
     for field in bool_fields:
@@ -295,6 +342,8 @@ def normalize_config_types(config: Dict[str, Any]) -> None:
 
     if config["curvature_target_mode"] not in {"complexity_linear", "complexity_squared", "none"}:
         raise ValueError("curvature_target_mode must be one of: complexity_linear, complexity_squared, none")
+    if config["curvature_parameterization"] not in {"sigmoid_bounded", "softplus_floor"}:
+        raise ValueError("curvature_parameterization must be one of: sigmoid_bounded, softplus_floor")
     if not 0.0 <= config["curvature_min_warning_fraction"] <= 1.0:
         raise ValueError("curvature_min_warning_fraction must be in [0, 1]")
 
@@ -458,12 +507,84 @@ def normalized_complexity_target(complexity: torch.Tensor, mode: str) -> Optiona
     raise ValueError("curvature_target_mode must be one of: complexity_linear, complexity_squared, none")
 
 
-def target_abs_curvature_from_complexity(complexity: torch.Tensor, config: Dict[str, Any]) -> Optional[torch.Tensor]:
+def curvature_target_scale_used(config: Dict[str, Any], epoch: Optional[int] = None) -> float:
+    scale = float(config.get("curvature_target_scale", 1.0))
+    warmup_epochs = int(config.get("curvature_target_warmup_epochs", 0))
+    if epoch is not None and warmup_epochs > 0:
+        scale *= min(1.0, max(float(epoch), 0.0) / float(warmup_epochs))
+    return scale
+
+
+def target_abs_curvature_from_complexity(
+    complexity: torch.Tensor,
+    config: Dict[str, Any],
+    epoch: Optional[int] = None,
+    pred_abs_curvature: Optional[torch.Tensor] = None,
+) -> Optional[torch.Tensor]:
     normalized_target = normalized_complexity_target(complexity, config.get("curvature_target_mode", "complexity_linear"))
     if normalized_target is None:
         return None
     curvature_span = config["max_abs_curvature"] - config["min_abs_curvature"]
-    return config["min_abs_curvature"] + curvature_span * normalized_target
+    target = config["min_abs_curvature"] + curvature_span * normalized_target
+    target = config["min_abs_curvature"] + (target - config["min_abs_curvature"]) * curvature_target_scale_used(config, epoch)
+
+    if pred_abs_curvature is not None and bool(config.get("curvature_target_normalize", False)):
+        pred_detached = pred_abs_curvature.detach()
+        target_mean = target.mean()
+        target_std = target.std(unbiased=False).clamp_min(1e-6)
+        pred_std = pred_detached.std(unbiased=False).clamp_min(
+            float(config.get("curvature_min_std", 0.02))
+        )
+        target = (target - target_mean) / target_std * pred_std + target_mean
+    if pred_abs_curvature is not None and bool(config.get("curvature_target_centering", False)):
+        target = target - target.mean() + pred_abs_curvature.detach().mean()
+
+    return target.clamp_min(float(config["min_abs_curvature"]))
+
+
+def curvature_anti_collapse_losses(
+    pred_abs_curvature: torch.Tensor,
+    target_abs_curvature: Optional[torch.Tensor],
+    config: Dict[str, Any],
+    pred_raw_curvature: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    zero = pred_abs_curvature.new_zeros(())
+    if not bool(config.get("enable_curvature_anti_collapse", False)):
+        return zero, zero, zero
+
+    min_abs_curvature = float(config["min_abs_curvature"])
+    max_abs_curvature = float(config["max_abs_curvature"])
+    span = max(max_abs_curvature - min_abs_curvature, 1e-6)
+    pred = pred_abs_curvature.view(-1)
+    pred_mean = pred.mean()
+    pred_std = pred.std(unbiased=False) if pred.numel() > 1 else zero
+
+    margin = max(float(config.get("curvature_min_margin", 0.1)), 1e-6)
+    min_threshold = min_abs_curvature + margin
+    margin_scale = pred.new_tensor(margin * margin)
+    mean_floor_penalty = F.relu(pred.new_tensor(min_threshold) - pred_mean).pow(2) / margin_scale
+    sample_floor_penalty = F.relu(pred.new_tensor(min_threshold) - pred).pow(2).mean() / margin_scale
+    collapse_penalty = mean_floor_penalty + float(config.get("curvature_floor_penalty_weight", 1.0)) * sample_floor_penalty
+    if pred_raw_curvature is not None and float(config.get("curvature_raw_floor_penalty_weight", 0.0)) > 0:
+        if config.get("curvature_parameterization", "sigmoid_bounded") == "softplus_floor":
+            raw_threshold = math.log(math.expm1(margin))
+        else:
+            normalized = min(max(margin / span, 1e-6), 1.0 - 1e-6)
+            raw_threshold = math.log(normalized / (1.0 - normalized))
+        raw_floor_penalty = F.relu(pred.new_tensor(raw_threshold) - pred_raw_curvature.view(-1)).pow(2).mean()
+        collapse_penalty = collapse_penalty + float(config.get("curvature_raw_floor_penalty_weight", 0.0)) * raw_floor_penalty
+
+    min_std = max(float(config.get("curvature_min_std", 0.02)), 1e-8)
+    spread_penalty = F.relu(pred.new_tensor(min_std) - pred_std).pow(2) / pred.new_tensor(min_std * min_std)
+
+    distribution_penalty = zero
+    if target_abs_curvature is not None:
+        target = target_abs_curvature.detach().view(-1)
+        pred_norm = (pred - min_abs_curvature) / span
+        target_norm = (target - min_abs_curvature) / span
+        distribution_penalty = F.smooth_l1_loss(pred_norm, target_norm)
+
+    return collapse_penalty, spread_penalty, distribution_penalty
 
 
 def curvature_boundary_tolerance(config: Dict[str, Any]) -> float:
@@ -518,23 +639,58 @@ def run_epoch(
             loss = ce_loss
             metric_reg_loss = model.metric_regularization()
             curvature_loss = torch.zeros((), dtype=loss.dtype, device=loss.device)
+            curvature_collapse_penalty = torch.zeros((), dtype=loss.dtype, device=loss.device)
+            curvature_spread_penalty = torch.zeros((), dtype=loss.dtype, device=loss.device)
+            curvature_distribution_penalty = torch.zeros((), dtype=loss.dtype, device=loss.device)
+            curvature_total_aux_loss = torch.zeros((), dtype=loss.dtype, device=loss.device)
             jacobian_reg_loss = torch.zeros((), dtype=loss.dtype, device=loss.device)
             jacobian_complexity_loss = torch.zeros((), dtype=loss.dtype, device=loss.device)
             target_abs_curvature_mean = torch.full((), float("nan"), dtype=loss.dtype, device=loss.device)
+            target_abs_curvature: Optional[torch.Tensor] = None
 
             if is_train and config["metric_reg_weight"] > 0:
                 loss = loss + config["metric_reg_weight"] * metric_reg_loss
+            pred_abs_curvature = output["curvature"].abs()
             if (
                 is_train
                 and config.get("curvature_aux_weight", 0.0) > 0
                 and "complexity" in batch
             ):
                 complexity = batch["complexity"].view(-1, 1)
-                target_abs_curvature = target_abs_curvature_from_complexity(complexity, config)
+                target_abs_curvature = target_abs_curvature_from_complexity(
+                    complexity,
+                    config,
+                    epoch=epoch,
+                    pred_abs_curvature=pred_abs_curvature,
+                )
                 if target_abs_curvature is not None:
                     target_abs_curvature_mean = target_abs_curvature.mean()
-                    curvature_loss = F.mse_loss(-output["curvature"], target_abs_curvature)
+                    curvature_loss = F.mse_loss(pred_abs_curvature, target_abs_curvature)
                     loss = loss + config["curvature_aux_weight"] * curvature_loss
+            if is_train and bool(config.get("enable_curvature_anti_collapse", False)):
+                curvature_collapse_penalty, curvature_spread_penalty, curvature_distribution_penalty = (
+                    curvature_anti_collapse_losses(
+                        pred_abs_curvature,
+                        target_abs_curvature,
+                        config,
+                        pred_raw_curvature=output.get("curvature_raw"),
+                    )
+                )
+                collapse_weight = float(config.get("curvature_anti_collapse_weight", 0.0))
+                if collapse_weight <= 0:
+                    collapse_weight = float(config.get("curvature_collapse_weight", 0.0))
+                curvature_total_aux_loss = (
+                    config.get("curvature_aux_weight", 0.0) * curvature_loss
+                    + collapse_weight * curvature_collapse_penalty
+                    + config.get("curvature_spread_weight", 0.0) * curvature_spread_penalty
+                    + config.get("curvature_distribution_weight", 0.0) * curvature_distribution_penalty
+                )
+                loss = (
+                    loss
+                    + collapse_weight * curvature_collapse_penalty
+                    + config.get("curvature_spread_weight", 0.0) * curvature_spread_penalty
+                    + config.get("curvature_distribution_weight", 0.0) * curvature_distribution_penalty
+                )
 
             if true_jacobian_enabled and is_train and "jacobian_frobenius" in output:
                 jacobian_frobenius = output["jacobian_frobenius"]
@@ -592,7 +748,8 @@ def run_epoch(
             mean_complexity = batch["complexity"].detach().mean().item() if "complexity" in batch else float("nan")
             log_message = (
                 "epoch=%d step=%d loss=%.4f ce=%.4f acc=%.4f curvature_loss=%.4f "
-                "metric_reg=%.6f mean_abs_c=%.4f mean_complexity=%.4f target_abs_c_mean=%.4f"
+                "metric_reg=%.6f mean_abs_c=%.4f mean_complexity=%.4f target_abs_c_mean=%.4f "
+                "curv_collapse=%.6f curv_spread=%.6f curv_total_aux=%.6f"
             )
             log_args = [
                 epoch,
@@ -605,6 +762,9 @@ def run_epoch(
                 mean_abs_curvature,
                 mean_complexity,
                 target_abs_curvature_mean.detach().item(),
+                curvature_collapse_penalty.detach().item(),
+                curvature_spread_penalty.detach().item(),
+                curvature_total_aux_loss.detach().item(),
             ]
             if true_jacobian_enabled and "jacobian_frobenius" in output:
                 jacobian_frobenius = output["jacobian_frobenius"].detach()
@@ -668,6 +828,9 @@ def aggregate_validation_diagnostics(
     jacobian_rank_values: List[torch.Tensor] = []
     target_abs_curvatures: List[torch.Tensor] = []
     curvature_aux_losses: List[torch.Tensor] = []
+    curvature_collapse_penalties: List[torch.Tensor] = []
+    curvature_spread_penalties: List[torch.Tensor] = []
+    curvature_total_aux_losses: List[torch.Tensor] = []
 
     with torch.set_grad_enabled(true_jacobian_enabled):
         for batch in dataloader:
@@ -680,10 +843,17 @@ def aggregate_validation_diagnostics(
             )
             abs_curvature = output["curvature"].detach().abs().view(-1)
             abs_curvatures.append(abs_curvature.cpu())
+            target_abs_curvature: Optional[torch.Tensor] = None
+            batch_curvature_aux_loss = abs_curvature.new_zeros(())
             if "complexity" in batch:
                 complexity = batch["complexity"].detach().view(-1)
                 complexities.append(complexity.cpu())
-                target_abs_curvature = target_abs_curvature_from_complexity(complexity.view(-1, 1), config)
+                target_abs_curvature = target_abs_curvature_from_complexity(
+                    complexity.view(-1, 1),
+                    config,
+                    epoch=epoch,
+                    pred_abs_curvature=abs_curvature.view(-1, 1),
+                )
                 if target_abs_curvature is not None:
                     target_abs_curvatures.append(target_abs_curvature.detach().view(-1).cpu())
                     per_sample_loss = F.mse_loss(
@@ -692,6 +862,25 @@ def aggregate_validation_diagnostics(
                         reduction="none",
                     ).view(-1)
                     curvature_aux_losses.append(per_sample_loss.cpu())
+                    batch_curvature_aux_loss = per_sample_loss.mean()
+            collapse_penalty, spread_penalty, distribution_penalty = curvature_anti_collapse_losses(
+                abs_curvature.view(-1, 1),
+                target_abs_curvature.detach() if target_abs_curvature is not None else None,
+                config,
+                pred_raw_curvature=output.get("curvature_raw").detach() if "curvature_raw" in output else None,
+            )
+            collapse_weight = float(config.get("curvature_anti_collapse_weight", 0.0))
+            if collapse_weight <= 0:
+                collapse_weight = float(config.get("curvature_collapse_weight", 0.0))
+            batch_aux_loss = (
+                float(config.get("curvature_aux_weight", 0.0)) * batch_curvature_aux_loss
+                + collapse_weight * collapse_penalty
+                + float(config.get("curvature_spread_weight", 0.0)) * spread_penalty
+                + float(config.get("curvature_distribution_weight", 0.0)) * distribution_penalty
+            )
+            curvature_collapse_penalties.append(collapse_penalty.detach().view(1).cpu())
+            curvature_spread_penalties.append(spread_penalty.detach().view(1).cpu())
+            curvature_total_aux_losses.append(batch_aux_loss.detach().view(1).cpu())
             if "jacobian_frobenius" in output:
                 jacobian_frobenius_values.append(output["jacobian_frobenius"].detach().view(-1).cpu())
             if "jacobian_effective_rank" in output:
@@ -710,6 +899,15 @@ def aggregate_validation_diagnostics(
         torch.cat(target_abs_curvatures) if target_abs_curvatures else torch.empty(0)
     )
     curvature_aux_loss_all = torch.cat(curvature_aux_losses) if curvature_aux_losses else torch.empty(0)
+    curvature_collapse_penalty_all = (
+        torch.cat(curvature_collapse_penalties) if curvature_collapse_penalties else torch.empty(0)
+    )
+    curvature_spread_penalty_all = (
+        torch.cat(curvature_spread_penalties) if curvature_spread_penalties else torch.empty(0)
+    )
+    curvature_total_aux_loss_all = (
+        torch.cat(curvature_total_aux_losses) if curvature_total_aux_losses else torch.empty(0)
+    )
 
     min_abs_curvature = float(config["min_abs_curvature"])
     max_abs_curvature = float(config["max_abs_curvature"])
@@ -740,6 +938,14 @@ def aggregate_validation_diagnostics(
         "num_samples": int(abs_curvature_all.numel()),
         "mean_abs_c": tensor_mean(abs_curvature_all),
         "std_abs_c": tensor_std(abs_curvature_all),
+        "pred_abs_c_min": tensor_min(abs_curvature_all),
+        "pred_abs_c_max": tensor_max(abs_curvature_all),
+        "pred_abs_c_mean": tensor_mean(abs_curvature_all),
+        "pred_abs_c_std": tensor_std(abs_curvature_all),
+        "target_abs_c_min": tensor_min(target_abs_curvature_all),
+        "target_abs_c_max": tensor_max(target_abs_curvature_all),
+        "target_abs_c_mean": tensor_mean(target_abs_curvature_all),
+        "target_abs_c_std": tensor_std(target_abs_curvature_all),
         "mean_complexity": tensor_mean(complexity_all),
         "jac_frob_mean": tensor_mean(jacobian_frobenius_all),
         "jac_frob_std": tensor_std(jacobian_frobenius_all),
@@ -759,6 +965,13 @@ def aggregate_validation_diagnostics(
         ),
         "curvature_aux_loss": tensor_mean(curvature_aux_loss_all),
         "target_abs_curvature_mean": tensor_mean(target_abs_curvature_all),
+        "curvature_target_scale_used": curvature_target_scale_used(config, epoch),
+        "curvature_collapse_penalty": tensor_mean(curvature_collapse_penalty_all),
+        "curvature_spread_penalty": tensor_mean(curvature_spread_penalty_all),
+        "curvature_total_aux_loss": tensor_mean(curvature_total_aux_loss_all),
+        "curvature_anti_collapse_weight": float(config.get("curvature_anti_collapse_weight", 0.0)),
+        "curvature_spread_weight": float(config.get("curvature_spread_weight", 0.0)),
+        "curvature_init_abs_c": config.get("curvature_init_abs_c"),
         "curvature_boundary_tolerance": boundary_tol,
     }
 
@@ -807,6 +1020,20 @@ def tensor_std(values: torch.Tensor) -> Optional[float]:
     if values.numel() == 0:
         return None
     value = float(values.float().std(unbiased=False).item())
+    return value if math.isfinite(value) else None
+
+
+def tensor_min(values: torch.Tensor) -> Optional[float]:
+    if values.numel() == 0:
+        return None
+    value = float(values.float().min().item())
+    return value if math.isfinite(value) else None
+
+
+def tensor_max(values: torch.Tensor) -> Optional[float]:
+    if values.numel() == 0:
+        return None
+    value = float(values.float().max().item())
     return value if math.isfinite(value) else None
 
 
@@ -905,6 +1132,8 @@ def main() -> None:
         freeze_encoder=config["freeze_encoder"],
         min_abs_curvature=config["min_abs_curvature"],
         max_abs_curvature=config["max_abs_curvature"],
+        curvature_parameterization=config.get("curvature_parameterization", "sigmoid_bounded"),
+        curvature_init_abs_c=config.get("curvature_init_abs_c"),
         max_expmap_norm=config["max_expmap_norm"],
         max_tangent_norm=config["max_tangent_norm"],
         metric_delta_scale=config["metric_delta_scale"],

@@ -8,8 +8,10 @@ from src.model import SemanticLorentzParser
 from train import (
     aggregate_validation_diagnostics,
     build_dataloader,
+    curvature_anti_collapse_losses,
     normalize_config_types,
     safe_pearson_correlation,
+    target_abs_curvature_from_complexity,
 )
 
 
@@ -62,6 +64,7 @@ def test_validation_diagnostics_json_contains_expected_keys(tmp_path) -> None:
         "curvature_target_mode": "complexity_linear",
         "curvature_min_warning_fraction": 0.8,
         "use_true_jacobian_metric": False,
+        "enable_curvature_anti_collapse": True,
     }
     normalize_config_types(config)
 
@@ -108,6 +111,47 @@ def test_validation_diagnostics_json_contains_expected_keys(tmp_path) -> None:
         "curvature_mean_to_min_ratio",
         "curvature_aux_loss",
         "target_abs_curvature_mean",
+        "pred_abs_c_min",
+        "pred_abs_c_max",
+        "pred_abs_c_mean",
+        "pred_abs_c_std",
+        "target_abs_c_min",
+        "target_abs_c_max",
+        "target_abs_c_mean",
+        "target_abs_c_std",
+        "curvature_target_scale_used",
+        "curvature_collapse_penalty",
+        "curvature_spread_penalty",
+        "curvature_total_aux_loss",
+        "curvature_anti_collapse_weight",
+        "curvature_spread_weight",
+        "curvature_init_abs_c",
     }
     assert expected_keys.issubset(diagnostics.keys())
     assert (tmp_path / "diagnostics_epoch_1.json").exists()
+
+
+def test_curvature_anti_collapse_penalty_is_finite_scalar() -> None:
+    config = {
+        "min_abs_curvature": 0.05,
+        "max_abs_curvature": 5.0,
+        "curvature_target_mode": "complexity_linear",
+        "enable_curvature_anti_collapse": True,
+        "curvature_min_margin": 0.1,
+        "curvature_min_std": 0.02,
+        "curvature_raw_floor_penalty_weight": 0.05,
+    }
+    normalize_config_types(config)
+    pred_abs_c = torch.tensor([[0.0501], [0.0502], [0.0503]])
+    complexity = torch.tensor([[1.0], [2.0], [4.0]])
+    target_abs_c = target_abs_curvature_from_complexity(complexity, config, epoch=1, pred_abs_curvature=pred_abs_c)
+
+    collapse_penalty, spread_penalty, distribution_penalty = curvature_anti_collapse_losses(
+        pred_abs_c,
+        target_abs_c,
+        config,
+    )
+
+    for penalty in (collapse_penalty, spread_penalty, distribution_penalty):
+        assert penalty.shape == torch.Size([])
+        assert torch.isfinite(penalty)

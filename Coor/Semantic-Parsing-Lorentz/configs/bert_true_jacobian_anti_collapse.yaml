@@ -1,11 +1,13 @@
 seed: 42
 
-# Local smoke tests run without external downloads. Set this to false on the
-# cluster to use a HuggingFace encoder.
-use_dummy_encoder: true
+use_dummy_encoder: false
 encoder_name: bert-base-uncased
 hf_local_files_only: false
 freeze_encoder: false
+
+dataset_type: mock
+complexity_mode: heuristic
+return_complexity_features: false
 
 num_labels: 8
 hidden_dim: 128
@@ -17,57 +19,51 @@ dropout: 0.1
 
 min_abs_curvature: 0.05
 max_abs_curvature: 5.0
+curvature_parameterization: softplus_floor
+curvature_init_abs_c: 0.8
 max_expmap_norm: 15.0
 max_tangent_norm: 5.0
 metric_delta_scale: 0.05
 metric_reg_weight: 0.0001
-curvature_aux_weight: 0.01
+curvature_aux_weight: 0.05
 curvature_min_warning_fraction: 0.8
 curvature_target_mode: complexity_linear
-curvature_parameterization: sigmoid_bounded
 curvature_target_warmup_epochs: 0
-curvature_target_scale: 1.0
+curvature_target_scale: 0.5
 curvature_target_normalize: false
 curvature_target_centering: false
-enable_curvature_anti_collapse: false
-curvature_collapse_weight: 0.0
-curvature_spread_weight: 0.0
-curvature_distribution_weight: 0.0
-curvature_anti_collapse_weight: 0.0
+enable_curvature_anti_collapse: true
+curvature_collapse_weight: 0.5
+curvature_anti_collapse_weight: 0.5
 curvature_floor_penalty_weight: 1.0
-curvature_raw_floor_penalty_weight: 0.0
-curvature_min_margin: 0.1
-curvature_min_std: 0.02
-curvature_init_abs_c: null
+curvature_raw_floor_penalty_weight: 0.05
+curvature_spread_weight: 0.2
+curvature_distribution_weight: 0.02
+curvature_min_margin: 0.2
+curvature_min_std: 0.03
 
-dataset_type: mock
-train_jsonl: null
-val_jsonl: null
-complexity_mode: synthetic
-return_complexity_features: false
-
-use_true_jacobian_metric: false
+use_true_jacobian_metric: true
 true_jacobian_target: lorentz
 true_jacobian_create_graph: true
 true_jacobian_normalize: true
 true_jacobian_identity_mix: 0.1
 true_jacobian_max_batch: null
-true_jacobian_reg_weight: 0.0
-true_jacobian_complexity_weight: 0.0
 detach_true_jacobian_metric: false
-log_true_jacobian_stats: false
+true_jacobian_reg_weight: 0.00001
+true_jacobian_complexity_weight: 0.01
+log_true_jacobian_stats: true
 true_jacobian_log_interval: 100
 save_jacobian_diagnostics: false
 
 num_train_samples: 512
 num_val_samples: 128
-batch_size: 16
+batch_size: 8
 num_workers: 0
 
 epochs: 5
-learning_rate: 0.0002
+learning_rate: 0.00002
 weight_decay: 0.01
 grad_clip_norm: 1.0
 log_interval: 10
 
-output_dir: outputs/lorentz_semantic_parser
+output_dir: outputs/bert_true_jacobian_anti_collapse
