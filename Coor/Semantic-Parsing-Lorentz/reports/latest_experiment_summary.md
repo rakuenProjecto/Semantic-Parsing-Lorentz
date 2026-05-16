@@ -1,7 +1,7 @@
 # Latest Experiment Summary
 
-- output_dir: `outputs/cycle_short_manual_20260516_194924`
-- log_path: `logs/cycle_short_manual_20260516_194924.log`
+- output_dir: `outputs/cycle_short_manual_20260516_195042`
+- log_path: `logs/cycle_short_manual_20260516_195042.log`
 - best_val_loss: `1.9109`
 - final_val_loss: `1.9109`
 - final_val_acc: `0.9688`
@@ -31,4 +31,4 @@
 - effective_batch_size: `8`
 - amp_enabled: `False`
 - cycle_id: `manual`
-- git_commit: `1104fb26549ba89e3af8cb0bf7f34eb5ccbb7720`
+- git_commit: `3df9b3ee572565d7ec9bae6089c5e48112525f4f`
