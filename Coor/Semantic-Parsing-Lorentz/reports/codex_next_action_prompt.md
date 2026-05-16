@@ -1,8 +1,8 @@
 # Codex Next Action Prompt
 
-- cycle: `211`
+- cycle: `212`
 - last status: `dry_run_planned`
-- last commit: `cf3c33132d787bf9875bd5c162f96d4798f6ceb2`
+- last commit: `f41e112ee91917dea6f7dd18f35710963a97d09d`
 
 ## Diagnosis
 []
