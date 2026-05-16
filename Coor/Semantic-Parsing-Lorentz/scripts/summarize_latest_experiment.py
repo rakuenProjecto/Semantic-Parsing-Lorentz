@@ -19,6 +19,7 @@ FINAL_RE = re.compile(r"epoch=(?P<epoch>\d+) train_loss=.* val_loss=(?P<val_loss
 BEST_RE = re.compile(r"training complete best_val_loss=(?P<best>[-+0-9.eE]+)")
 JAC_RE = re.compile(r"jac_reg=(?P<jac_reg>[-+0-9.eE]+).*jac_complexity=(?P<jac_complexity>[-+0-9.eE]+)")
 GPU_RE = re.compile(r"max_allocated_mb=(?P<peak>[-+0-9.eE]+)")
+EPOCH_DIAGNOSTICS_RE = re.compile(r"diagnostics_epoch_(?P<epoch>\d+)\.json$")
 
 
 def load_json(path: Path) -> Dict[str, Any]:
@@ -30,6 +31,21 @@ def find_latest(pattern: str, root: Path) -> Optional[Path]:
     if not matches:
         return None
     return max(matches, key=lambda path: path.stat().st_mtime)
+
+
+def resolve_project_path(path: Path) -> Path:
+    return path if path.is_absolute() else PROJECT_DIR / path
+
+
+def find_latest_epoch_diagnostics(root: Path) -> Optional[Path]:
+    matches = []
+    for path in root.glob("diagnostics_epoch_*.json"):
+        match = EPOCH_DIAGNOSTICS_RE.fullmatch(path.name)
+        if match and path.is_file():
+            matches.append((int(match.group("epoch")), path.stat().st_mtime, path))
+    if not matches:
+        return None
+    return max(matches, key=lambda item: (item[0], item[1]))[2]
 
 
 def git_commit() -> Optional[str]:
@@ -73,19 +89,33 @@ def parse_log(path: Optional[Path]) -> Dict[str, Any]:
 
 
 def summarize(output_dir: Optional[Path], log_path: Optional[Path], cycle_id: Optional[str]) -> Dict[str, Any]:
-    diagnostics_path = None
+    diagnostics_path: Optional[Path] = None
+    diagnostics_display_path: Optional[Path] = None
+    output_dir_fs: Optional[Path] = None
+    output_dir_display = output_dir
     if output_dir is not None:
-        diagnostics_path = output_dir / "diagnostics_final.json"
-    if diagnostics_path is None or not diagnostics_path.exists():
+        output_dir_fs = resolve_project_path(output_dir)
+        if not output_dir_fs.is_dir():
+            raise FileNotFoundError(f"--output-dir does not exist or is not a directory: {output_dir}")
+        diagnostics_path = find_latest_epoch_diagnostics(output_dir_fs)
+        if diagnostics_path is None:
+            final_path = output_dir_fs / "diagnostics_final.json"
+            diagnostics_path = final_path if final_path.exists() else None
+        if diagnostics_path is None:
+            raise FileNotFoundError(f"no diagnostics_epoch_*.json or diagnostics_final.json found in --output-dir: {output_dir}")
+        diagnostics_display_path = output_dir / diagnostics_path.name
+    else:
         diagnostics_path = find_latest("**/diagnostics_final.json", PROJECT_DIR / "outputs")
+        diagnostics_display_path = diagnostics_path
+        output_dir_fs = diagnostics_path.parent if diagnostics_path is not None else None
+        output_dir_display = output_dir_fs
     diagnostics = load_json(diagnostics_path) if diagnostics_path is not None else {}
-    output_dir = diagnostics_path.parent if diagnostics_path is not None else output_dir
     if log_path is None:
         log_path = find_latest("*.log", PROJECT_DIR / "logs")
-    log_metrics = parse_log(log_path)
+    log_metrics = parse_log(resolve_project_path(log_path) if log_path is not None else None)
     gpu_probe_path = PROJECT_DIR / "reports" / "gpu_probe.json"
     gpu = load_json(gpu_probe_path) if gpu_probe_path.exists() else {}
-    config_path = output_dir / "config_used.yaml" if output_dir is not None else None
+    config_path = output_dir_fs / "config_used.yaml" if output_dir_fs is not None else None
     batch_size = None
     if config_path is not None and config_path.exists():
         for line in config_path.read_text(encoding="utf-8").splitlines():
@@ -93,8 +123,9 @@ def summarize(output_dir: Optional[Path], log_path: Optional[Path], cycle_id: Op
                 batch_size = int(float(line.split(":", 1)[1].strip()))
                 break
     payload = {
-        "output_dir": str(output_dir) if output_dir else None,
+        "output_dir": str(output_dir_display) if output_dir_display else None,
         "log_path": str(log_path) if log_path else None,
+        "diagnostics_path": str(diagnostics_display_path) if diagnostics_display_path else None,
         "best_val_loss": log_metrics["best_val_loss"],
         "final_val_loss": log_metrics["final_val_loss"],
         "final_val_acc": log_metrics["final_val_acc"],
