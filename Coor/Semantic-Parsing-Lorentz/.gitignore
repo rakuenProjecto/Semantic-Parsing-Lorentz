@@ -18,3 +18,13 @@ codex_latest_work_report.txt
 
 # Generated ablation reports
 /reports/ablations/
+
+# Isolated A10 generated artifacts
+/logs_a10_isolated/
+/outputs_a10_isolated/
+/reports_a10_isolated/
+
+# Temporary analysis outputs
+/reports/ablation_comparison_*.md
+/reports/ablation_comparison_*.json
+/make_ablation_comparison.py
