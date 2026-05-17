@@ -1,0 +1,69 @@
+seed: 42
+
+use_dummy_encoder: false
+encoder_name: bert-base-uncased
+hf_local_files_only: false
+freeze_encoder: false
+
+dataset_type: mock
+complexity_mode: heuristic
+return_complexity_features: false
+
+num_labels: 8
+hidden_dim: 128
+tangent_dim: 64
+dummy_vocab_size: 30522
+max_position_embeddings: 128
+max_length: 64
+dropout: 0.1
+
+min_abs_curvature: 0.05
+max_abs_curvature: 5.0
+curvature_parameterization: softplus_floor
+curvature_init_abs_c: 0.8
+max_expmap_norm: 15.0
+max_tangent_norm: 5.0
+metric_delta_scale: 0.05
+metric_reg_weight: 0.0001
+curvature_aux_weight: 0.05
+curvature_min_warning_fraction: 0.8
+curvature_target_mode: complexity_linear
+curvature_target_warmup_epochs: 0
+curvature_target_scale: 0.5
+curvature_target_normalize: false
+curvature_target_centering: false
+enable_curvature_anti_collapse: true
+curvature_collapse_weight: 0.5
+curvature_anti_collapse_weight: 0.5
+curvature_floor_penalty_weight: 1.0
+curvature_raw_floor_penalty_weight: 0.05
+curvature_spread_weight: 0.2
+curvature_distribution_weight: 0.02
+curvature_min_margin: 0.2
+curvature_min_std: 0.03
+
+use_true_jacobian_metric: true
+true_jacobian_target: lorentz
+true_jacobian_create_graph: true
+true_jacobian_normalize: true
+true_jacobian_identity_mix: 0.1
+true_jacobian_max_batch: null
+detach_true_jacobian_metric: false
+true_jacobian_reg_weight: 0.0
+true_jacobian_complexity_weight: 0.0
+log_true_jacobian_stats: true
+true_jacobian_log_interval: 100
+save_jacobian_diagnostics: false
+
+num_train_samples: 512
+num_val_samples: 128
+batch_size: 8
+num_workers: 0
+
+epochs: 5
+learning_rate: 0.00002
+weight_decay: 0.01
+grad_clip_norm: 1.0
+log_interval: 10
+
+output_dir: outputs/ablations/bert_no_jacobian_reg
