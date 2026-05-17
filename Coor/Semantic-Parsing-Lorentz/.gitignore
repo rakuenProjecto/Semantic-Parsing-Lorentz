@@ -15,3 +15,6 @@ codex_latest_work_report.txt
 
 # Local real datasets
 /data/real/
+
+# Generated ablation reports
+/reports/ablations/
