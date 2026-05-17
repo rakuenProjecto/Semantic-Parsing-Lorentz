@@ -28,3 +28,11 @@ codex_latest_work_report.txt
 /reports/ablation_comparison_*.md
 /reports/ablation_comparison_*.json
 /make_ablation_comparison.py
+
+# Task expansion generated artifacts
+/logs_task_isolated/
+/outputs_task_isolated/
+/reports_task_isolated/
+
+# Local GLUE data
+/data/real/glue/
