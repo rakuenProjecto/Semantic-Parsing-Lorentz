@@ -1,0 +1,22 @@
+[
+  {
+    "task": "rte",
+    "split": "train",
+    "counts": {
+      "1": 1241,
+      "0": 1249
+    },
+    "total": 2490,
+    "majority_acc": 0.5016064257028112
+  },
+  {
+    "task": "rte",
+    "split": "val",
+    "counts": {
+      "1": 131,
+      "0": 146
+    },
+    "total": 277,
+    "majority_acc": 0.5270758122743683
+  }
+]
